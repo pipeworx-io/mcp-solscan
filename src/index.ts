@@ -671,22 +671,42 @@ function collapse(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 /**
- * Solscan MCP — Solana block-explorer API (Pro v2)
+ * Solscan MCP — Solana block-explorer + network analytics
  *
  * Fills the non-EVM gap: `etherscan` covers EVM chains, Solscan covers
- * Solana. Account info, SPL token holdings, transactions, transfers, token
- * metadata.
+ * Solana. Two upstream hosts, two tiers:
  *
- * API: https://pro-api.solscan.io/pro-api-docs/v2.0/
- * Auth: header `token: <api_key>`. Free tier with API key — register at
- *       https://solscan.io/apis
+ * - pro-api.solscan.io/v2.0 — Pro tier. Account/token/transaction lookups
+ *   plus OHLCV and the Token List V2 screener. Pipeworx holds no Pro-tier
+ *   key (the Free-tier platform key 401s every one of these with
+ *   "Please upgrade your api key level" — confirmed live, fleet #2765) —
+ *   BYOK only, every tool here.
+ * - public-api.solscan.io/analytics/* — Free tier (new 2026-10, vendor mail
+ *   to developer@mojibake.ai). Six daily network-wide series: transactions,
+ *   active stake, fees, slots produced, DEX activity, compute units.
+ *   Pipeworx's Free-tier platform key (PLATFORM_SOLSCAN_KEY) covers these —
+ *   no caller key required.
  *
- * Tools:
+ * Auth: header `token: <api_key>` on BOTH hosts. Register at
+ *       https://solscan.io/apis (Free tier is enough for the six analytics
+ *       tools; Pro tier is required for the other seven).
+ *
+ * Tools (Pro, BYOK-only):
  * - get_account_detail:    account overview (balance, owner, executable)
  * - get_token_holdings:    SPL token balances held by an account
  * - list_transfers:        recent SOL/SPL transfers for an account
  * - get_token_meta:        SPL token metadata (name, symbol, supply, decimals)
  * - get_transaction:       transaction detail by signature
+ * - get_ohlcv:             OHLCV candles for a liquidity pool (1m–1Y buckets, cursor-paged)
+ * - get_token_screener:    Token List V2 — screener over 170+ metric fields
+ *
+ * Tools (Free, platform key):
+ * - get_network_transactions:  daily tx counts (total / vote / non-vote)
+ * - get_network_stake:         daily active stake, SOL + USD
+ * - get_network_fees:          daily base + priority fees, SOL + USD
+ * - get_network_slots:         daily blocks produced
+ * - get_dex_activity:          daily DEX trades/traders/volume/active platforms
+ * - get_network_compute_units: daily network compute-unit consumption
  */
 
 
@@ -698,13 +718,44 @@ async function pwFetch(url: string | URL, init?: RequestInit): Promise<Response>
   return fetchWithTimeout(url, init ?? {}, 'Solscan');
 }
 
-const BASE_URL = 'https://pro-api.solscan.io/v2.0';
+const PRO_BASE_URL = 'https://pro-api.solscan.io/v2.0';
+const FREE_ANALYTICS_BASE_URL = 'https://public-api.solscan.io';
+
+// Pro-tier tools (existing 5 + the 2 newly announced ones). Pipeworx's
+// platform key is Free tier only, so none of these may receive the
+// platform-key injection — listed in pack-manifest.json's `byoOnlyTools` so
+// the gateway never even tries. Kept here too as the pack's own last line
+// of defence if ever called directly without that manifest flag.
+const PRO_ONLY_TOOLS = new Set([
+  'get_account_detail',
+  'get_token_holdings',
+  'list_transfers',
+  'get_token_meta',
+  'get_transaction',
+  'get_ohlcv',
+  'get_token_screener',
+]);
+
+const RANGE_SCHEMA = {
+  type: 'number' as const,
+  enum: [30, 90, 180, 365],
+  description: 'Lookback window in days: 30, 90, 180, or 365 (default 30). Ignored if from_date/to_date are given — the vendor rejects any other value with a 400.',
+};
+const FROM_DATE_SCHEMA = { type: 'string' as const, description: 'Start date, YYYYMMDD. Use together with to_date instead of range.' };
+const TO_DATE_SCHEMA = { type: 'string' as const, description: 'End date, YYYYMMDD. Use together with from_date instead of range.' };
+
+const ANALYTICS_PROPERTIES = {
+  range: RANGE_SCHEMA,
+  from_date: FROM_DATE_SCHEMA,
+  to_date: TO_DATE_SCHEMA,
+};
 
 const tools: McpToolExport['tools'] = [
+  // ── Pro tier (BYOK-only) ──────────────────────────────────────────
   {
     name: 'get_account_detail',
     description:
-      'Overview of a Solana account: SOL balance (lamports + UI), owner program, executable flag, rent epoch.',
+      'Overview of a Solana account: SOL balance (lamports + UI), owner program, executable flag, rent epoch. Pro tier — requires your own Solscan API key (Pipeworx\'s platform key is Free tier and cannot call this).',
     inputSchema: {
       type: 'object',
       properties: { address: { type: 'string', description: 'Solana public key (base58)' } },
@@ -714,7 +765,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'get_token_holdings',
     description:
-      'SPL-token balances held by a Solana account. Returns mint, symbol, amount, decimals, USD value (if known).',
+      'SPL-token balances held by a Solana account. Returns mint, symbol, amount, decimals, USD value (if known). Pro tier — requires your own Solscan API key (Pipeworx\'s platform key is Free tier and cannot call this).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -728,7 +779,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'list_transfers',
     description:
-      'Recent SOL and SPL token transfers for an account. Returns signature, timestamp, side (sent/received), token, amount, counterparty.',
+      'Recent SOL and SPL token transfers for an account. Returns signature, timestamp, side (sent/received), token, amount, counterparty. Pro tier — requires your own Solscan API key (Pipeworx\'s platform key is Free tier and cannot call this).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -742,7 +793,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'get_token_meta',
     description:
-      'Metadata for an SPL token mint: name, symbol, decimals, supply, icon, market cap, holders, social links.',
+      'Metadata for an SPL token mint: name, symbol, decimals, supply, icon, market cap, holders, social links. Pro tier — requires your own Solscan API key (Pipeworx\'s platform key is Free tier and cannot call this).',
     inputSchema: {
       type: 'object',
       properties: { token_address: { type: 'string', description: 'SPL token mint address' } },
@@ -751,48 +802,189 @@ const tools: McpToolExport['tools'] = [
   },
   {
     name: 'get_transaction',
-    description: 'Fetch a Solana transaction by base58 signature. Returns status (Success/Fail), slot, block time, fee in lamports, SOL balance changes per account, and parsed instruction list.',
+    description:
+      'Fetch a Solana transaction by base58 signature. Returns status (Success/Fail), slot, block time, fee in lamports, SOL balance changes per account, and parsed instruction list. Pro tier — requires your own Solscan API key (Pipeworx\'s platform key is Free tier and cannot call this).',
     inputSchema: {
       type: 'object',
       properties: { signature: { type: 'string', description: 'Solana transaction signature (base58)' } },
       required: ['signature'],
     },
   },
+  {
+    name: 'get_ohlcv',
+    description:
+      'OHLCV price candles for a Solana liquidity pool (1-minute to 1-year buckets, cursor-paged). Announced by Solscan 2026-10-07; Pipeworx has not been able to verify the exact response shape because this is a Pro-tier-only endpoint and Pipeworx has no Pro-tier key — pass whatever extra query parameters Solscan\'s own docs specify via extra_params if the named fields below are not enough. Pro tier — requires your own Solscan API key (Pipeworx\'s platform key is Free tier and cannot call this).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pool_address: { type: 'string', description: 'Solana liquidity pool address (base58)' },
+        time_bucket: { type: 'string', description: 'Candle size, e.g. "1m", "1H", "1D", "1W" — Solscan supports 1 minute to 1 year.' },
+        time_from: { type: 'number', description: 'Unix timestamp (seconds), start of range' },
+        time_to: { type: 'number', description: 'Unix timestamp (seconds), end of range' },
+        cursor: { type: 'string', description: 'Pagination cursor from a previous response' },
+        extra_params: { type: 'object', properties: {}, additionalProperties: true, description: 'Any additional query parameters Solscan\'s docs name that are not covered above — forwarded verbatim.' },
+      },
+      required: ['pool_address'],
+    },
+  },
+  {
+    name: 'get_token_screener',
+    description:
+      'Solscan\'s Token List V2 screener — sorts/filters tokens over 170+ metric fields across nine time windows. Announced by Solscan 2026-10-07; Pipeworx has not been able to verify the full field list because this is a Pro-tier-only endpoint and Pipeworx has no Pro-tier key — pass any filter/window parameter from Solscan\'s own docs via extra_params. Pro tier — requires your own Solscan API key (Pipeworx\'s platform key is Free tier and cannot call this).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        page: { type: 'number', description: '1-based page (default 1)' },
+        page_size: { type: 'number', description: 'Items per page' },
+        sort_by: { type: 'string', description: 'Metric field to sort by, e.g. "market_cap", "holder", "created_time" (v1 values; v2 adds many more per Solscan\'s announcement).' },
+        sort_order: { type: 'string', enum: ['asc', 'desc'], description: 'Sort direction' },
+        time_window: { type: 'string', description: 'One of Solscan\'s nine screener time windows, e.g. "1h", "24h", "7d" — exact set not published as of 2026-10-07.' },
+        extra_params: { type: 'object', properties: {}, additionalProperties: true, description: 'Any additional screener filter Solscan\'s docs name that is not covered above — forwarded verbatim.' },
+      },
+      required: [],
+    },
+  },
+
+  // ── Free tier (platform key) ─────────────────────────────────────
+  {
+    name: 'get_network_transactions',
+    description:
+      'Daily Solana network transaction counts: total, vote, and non-vote (split success/fail). Free tier — covered by Pipeworx\'s own Solscan key, no caller key needed. Pass range OR from_date+to_date, not both.',
+    inputSchema: { type: 'object', properties: ANALYTICS_PROPERTIES, required: [] },
+  },
+  {
+    name: 'get_network_stake',
+    description:
+      'Daily total active stake on the Solana network, in SOL and USD. Free tier — covered by Pipeworx\'s own Solscan key, no caller key needed. Pass range OR from_date+to_date, not both.',
+    inputSchema: { type: 'object', properties: ANALYTICS_PROPERTIES, required: [] },
+  },
+  {
+    name: 'get_network_fees',
+    description:
+      'Daily Solana network fees: base fee and priority fee, each in SOL and USD, plus their total. Free tier — covered by Pipeworx\'s own Solscan key, no caller key needed. Pass range OR from_date+to_date, not both.',
+    inputSchema: { type: 'object', properties: ANALYTICS_PROPERTIES, required: [] },
+  },
+  {
+    name: 'get_network_slots',
+    description:
+      'Daily count of Solana blocks (slots) produced. Free tier — covered by Pipeworx\'s own Solscan key, no caller key needed. Pass range OR from_date+to_date, not both.',
+    inputSchema: { type: 'object', properties: ANALYTICS_PROPERTIES, required: [] },
+  },
+  {
+    name: 'get_dex_activity',
+    description:
+      'Daily Solana DEX activity: trade count, distinct trader count, USD volume, and number of active DEX platforms. Free tier — covered by Pipeworx\'s own Solscan key, no caller key needed. Pass range OR from_date+to_date, not both.',
+    inputSchema: { type: 'object', properties: ANALYTICS_PROPERTIES, required: [] },
+  },
+  {
+    name: 'get_network_compute_units',
+    description:
+      'Daily total compute units consumed across the Solana network. Free tier — covered by Pipeworx\'s own Solscan key, no caller key needed. Pass range OR from_date+to_date, not both.',
+    inputSchema: { type: 'object', properties: ANALYTICS_PROPERTIES, required: [] },
+  },
 ];
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
   const apiKey = (args._apiKey as string | undefined)?.trim();
+
+  if (PRO_ONLY_TOOLS.has(name)) {
+    if (!apiKey) {
+      throw new Error(
+        `Solscan "${name}" requires an API key on the Pro tier. Pipeworx's own Solscan key is Free tier and 401s every Pro v2 endpoint ("Please upgrade your api key level") — register at https://solscan.io/apis, upgrade past Free, then pass ?_apiKey=<token> on the gateway URL.`,
+      );
+    }
+    switch (name) {
+      case 'get_account_detail':
+        return proGet(apiKey, '/account/detail', { address: reqStr(args, 'address', '"vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"') });
+      case 'get_token_holdings':
+        return proGet(apiKey, '/account/token-accounts', {
+          address: reqStr(args, 'address', '"vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"'),
+          type: 'token',
+          page: String((args.page as number) ?? 1),
+          page_size: String(Math.min(40, Math.max(1, (args.page_size as number) ?? 20))),
+        });
+      case 'list_transfers':
+        return proGet(apiKey, '/account/transfer', {
+          address: reqStr(args, 'address', '"vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"'),
+          page: String((args.page as number) ?? 1),
+          page_size: String(Math.min(40, Math.max(1, (args.page_size as number) ?? 20))),
+        });
+      case 'get_token_meta':
+        return proGet(apiKey, '/token/meta', {
+          address: reqStr(args, 'token_address', '"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" (USDC)'),
+        });
+      case 'get_transaction':
+        return proGet(apiKey, '/transaction/detail', {
+          tx: reqStr(args, 'signature', '(base58 transaction signature)'),
+        });
+      case 'get_ohlcv': {
+        const params: Record<string, string> = {
+          address: reqStr(args, 'pool_address', '(Solana liquidity pool address)'),
+        };
+        if (typeof args.time_bucket === 'string' && args.time_bucket.trim()) params.time_bucket = args.time_bucket.trim();
+        if (typeof args.time_from === 'number') params.time_from = String(args.time_from);
+        if (typeof args.time_to === 'number') params.time_to = String(args.time_to);
+        if (typeof args.cursor === 'string' && args.cursor.trim()) params.cursor = args.cursor.trim();
+        mergeExtraParams(params, args.extra_params);
+        return proGet(apiKey, '/market/price/ohlcv', params);
+      }
+      case 'get_token_screener': {
+        const params: Record<string, string> = {
+          page: String((args.page as number) ?? 1),
+        };
+        if (typeof args.page_size === 'number') params.page_size = String(args.page_size);
+        if (typeof args.sort_by === 'string' && args.sort_by.trim()) params.sort_by = args.sort_by.trim();
+        if (typeof args.sort_order === 'string' && args.sort_order.trim()) params.sort_order = args.sort_order.trim();
+        if (typeof args.time_window === 'string' && args.time_window.trim()) params.time_window = args.time_window.trim();
+        mergeExtraParams(params, args.extra_params);
+        return proGet(apiKey, '/token/list-v2', params);
+      }
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  }
+
+  // Free-tier analytics tools. `apiKey` here is either the caller's own key
+  // (BYOK) or Pipeworx's platform key, injected by the gateway before this
+  // function is called (see pack-manifest.json's platformKeyEnv). If neither
+  // is present something upstream of this pack is broken — refuse loudly
+  // rather than send an unauthenticated request that will 401 anyway.
   if (!apiKey) {
     throw new Error(
-      'Solscan is BYO-only. Their v2 Pro API gates every endpoint behind a paid plan — free tokens return 401 "upgrade your api key level". Register at https://solscan.io/apis, upgrade, then pass ?_apiKey=<token> on the gateway URL.',
+      'Solscan network analytics requires an API key. Pipeworx normally supplies one automatically (Free tier covers these six endpoints) — if you see this, the platform key may be missing; pass your own via ?_apiKey=<token> (register at https://solscan.io/apis) as a workaround.',
     );
   }
+  const range = ANALYTICS_RANGES.has(args.range as number) ? (args.range as number) : undefined;
+  const fromDate = typeof args.from_date === 'string' ? args.from_date : undefined;
+  const toDate = typeof args.to_date === 'string' ? args.to_date : undefined;
+  const dateParams: Record<string, string> =
+    fromDate && toDate ? { from_date: fromDate, to_date: toDate } : { range: String(range ?? 30) };
+
   switch (name) {
-    case 'get_account_detail':
-      return solscanGet(apiKey, '/account/detail', { address: reqStr(args, 'address', '"vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"') });
-    case 'get_token_holdings':
-      return solscanGet(apiKey, '/account/token-accounts', {
-        address: reqStr(args, 'address', '"vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"'),
-        type: 'token',
-        page: String((args.page as number) ?? 1),
-        page_size: String(Math.min(40, Math.max(1, (args.page_size as number) ?? 20))),
-      });
-    case 'list_transfers':
-      return solscanGet(apiKey, '/account/transfer', {
-        address: reqStr(args, 'address', '"vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg"'),
-        page: String((args.page as number) ?? 1),
-        page_size: String(Math.min(40, Math.max(1, (args.page_size as number) ?? 20))),
-      });
-    case 'get_token_meta':
-      return solscanGet(apiKey, '/token/meta', {
-        address: reqStr(args, 'token_address', '"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" (USDC)'),
-      });
-    case 'get_transaction':
-      return solscanGet(apiKey, '/transaction/detail', {
-        tx: reqStr(args, 'signature', '(base58 transaction signature)'),
-      });
+    case 'get_network_transactions':
+      return analyticsGet(apiKey, '/analytics/transactions', dateParams);
+    case 'get_network_stake':
+      return analyticsGet(apiKey, '/analytics/stake', dateParams);
+    case 'get_network_fees':
+      return analyticsGet(apiKey, '/analytics/fees', dateParams);
+    case 'get_network_slots':
+      return analyticsGet(apiKey, '/analytics/slots', dateParams);
+    case 'get_dex_activity':
+      return analyticsGet(apiKey, '/analytics/dex/activity', dateParams);
+    case 'get_network_compute_units':
+      return analyticsGet(apiKey, '/analytics/compute-units', dateParams);
     default:
       throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+const ANALYTICS_RANGES = new Set([30, 90, 180, 365]);
+
+function mergeExtraParams(target: Record<string, string>, extra: unknown): void {
+  if (!extra || typeof extra !== 'object') return;
+  for (const [k, v] of Object.entries(extra as Record<string, unknown>)) {
+    if (v === undefined || v === null) continue;
+    target[k] = String(v);
   }
 }
 
@@ -804,22 +996,63 @@ function reqStr(args: Record<string, unknown>, key: string, example: string): st
   return v;
 }
 
-async function solscanGet(apiKey: string, path: string, params: Record<string, string>) {
+async function proGet(apiKey: string, path: string, params: Record<string, string>) {
   const qs = new URLSearchParams(params);
-  const res = await pwFetch(`${BASE_URL}${path}?${qs}`, {
+  const res = await pwFetch(`${PRO_BASE_URL}${path}?${qs}`, {
     headers: { token: apiKey, Accept: 'application/json' },
   });
-  if (res.status === 401 || res.status === 403) throw new Error('Solscan: unauthorized — check the API key');
+  if (res.status === 401 || res.status === 403) throw new Error(`Solscan: unauthorized (${res.status}) — check the API key or its plan tier`);
   if (res.status === 429) throw new Error('Solscan: rate-limit (HTTP 429)');
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Solscan error: ${res.status} ${body.slice(0, 200)}`);
-  }
-  const data = (await res.json()) as { success?: boolean; data?: unknown; errors?: unknown; message?: string };
+  if (!res.ok) throw await httpError(res, 'Solscan');
+  const data = (await res.json()) as { success?: boolean; data?: unknown; errors?: { code?: number; message?: string }; message?: string };
   if (data.success === false) {
-    throw new Error(`Solscan: ${data.message ?? 'unknown error'}`);
+    throw new Error(`Solscan: ${data.errors?.message ?? data.message ?? 'unknown error'}`);
   }
   return { path, data: data.data ?? data };
+}
+
+/** Same auth + envelope shape as proGet, different base URL and (observed
+ * live, fleet #2765) different auth-failure body: `{"error_message":"..."}`
+ * with no `success`/`errors` wrapper, vs. the Pro API's `{"success":false,
+ * "errors":{...}}`. Handled explicitly rather than assumed identical. */
+async function analyticsGet(apiKey: string, path: string, params: Record<string, string>) {
+  const qs = new URLSearchParams(params);
+  const res = await pwFetch(`${FREE_ANALYTICS_BASE_URL}${path}?${qs}`, {
+    headers: { token: apiKey, Accept: 'application/json' },
+  });
+  if (res.status === 401 || res.status === 403) {
+    const body = await res.text();
+    let message = body.slice(0, 200);
+    try {
+      const parsed = JSON.parse(body) as { error_message?: string };
+      if (parsed.error_message) message = parsed.error_message;
+    } catch {
+      // keep the raw slice
+    }
+    throw new Error(`Solscan: unauthorized (${res.status}) — ${message}`);
+  }
+  if (res.status === 429) throw new Error('Solscan: rate-limit (HTTP 429)');
+  if (!res.ok) throw await httpError(res, 'Solscan');
+  const data = (await res.json()) as {
+    success?: boolean;
+    errors?: { code?: number; message?: string };
+    message?: string;
+    data?: { updated_time?: number; lag_days?: number; filter?: string; series?: unknown[] };
+  };
+  if (data.success === false) {
+    throw new Error(`Solscan: ${data.errors?.message ?? data.message ?? 'unknown error'}`);
+  }
+  const inner = data.data ?? {};
+  return {
+    path,
+    // Solscan reports `updated_time` (unix seconds) and `lag_days` — the
+    // series itself lags live chain state by that many days. Surfaced as a
+    // proper ISO timestamp so callers don't have to decode a raw unix int to
+    // know how fresh this is (project convention: data_as_of on every response).
+    data_as_of: typeof inner.updated_time === 'number' ? new Date(inner.updated_time * 1000).toISOString() : null,
+    lag_days: inner.lag_days ?? null,
+    series: inner.series ?? [],
+  };
 }
 
 export default { tools, callTool, meter: { credits: 2 } } satisfies McpToolExport;

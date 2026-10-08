@@ -2,7 +2,7 @@
 
 Solscan Pro v2 MCP — Solana on-chain data.
 
-Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1683+ live data sources.
+Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1743+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
 
 ## Tools
 
@@ -65,13 +65,19 @@ directly, instead of just this one's:
 }
 ```
 
-Both URLs reach the same gateway and the same 1683+ data sources. The
+Both URLs reach the same gateway and the same 1743+ data sources. The
 only difference is which pack's tools are listed **directly**; `ask_pipeworx`
 reaches all of them from either one.
 
 ## No MCP client? Call it over HTTP
 
-This pack takes your own API key (`_apiKey`) — we don't front one for it, so there's no curl here that would run without it. Inspect any tool: `GET https://gateway.pipeworx.io/v1/tools/get_account_detail`. Find one: `POST https://gateway.pipeworx.io/v1/tools/search_packs` with `{"query":"..."}`.
+```bash
+curl -X POST https://gateway.pipeworx.io/v1/tools/get_account_detail \
+  -H 'Content-Type: application/json' \
+  -d '{"address":"SolendFtLatfDwGrPfLVLocked111111111111111"}'
+```
+
+No account needed for the first calls. Inspect any tool: `GET https://gateway.pipeworx.io/v1/tools/get_account_detail`. Find one: `POST https://gateway.pipeworx.io/v1/tools/search_packs` with `{"query":"..."}`.
 
 ## Standalone (no gateway account)
 
