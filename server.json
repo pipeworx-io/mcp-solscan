@@ -3,7 +3,7 @@
   "name": "io.github.pipeworx-io/solscan",
   "title": "Solscan",
   "description": "Solscan MCP — Solana block-explorer + network analytics",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "websiteUrl": "https://pipeworx.io/packs/solscan",
   "repository": {
     "url": "https://github.com/pipeworx-io/mcp-solscan",
