@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-solscan",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Solscan MCP — Solana block-explorer + network analytics",
   "type": "module",
   "main": "lib/index.js",
@@ -27,7 +27,7 @@
     "mode": "gateway",
     "slug": "solscan",
     "gatewaySlug": "solscan",
-    "sourceHash": "v1-c42e1ffd02f87fe18da39d56ec3336b5db68280dff6d33252cde9ac9d0ee3823",
-    "sourceCommit": "f47d581679e1e887373df51ba623f891fbe4c464"
+    "sourceHash": "v1-0944abc90019684a1dd84ec870c5571135b3b8fd0243f48e0d4cb41300e2e229",
+    "sourceCommit": "8fc802aa5e23be625ce08d97178f5676c7bc93f3"
   }
 }
